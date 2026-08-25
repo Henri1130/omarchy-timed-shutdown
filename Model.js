@@ -238,15 +238,31 @@ function statePath(runtimeDir) {
   return dir + "/" + PLUGIN_ID + ".json"
 }
 
-function startTimerCommand(seconds) {
+function startTimerCommand(seconds, shutdownBin) {
   var n = clampSeconds(seconds)
+  var cmd = String(shutdownBin || "").trim() || "omarchy-system-shutdown"
+  cmd = cmd.replace(/'/g, "")
   return [
     "sh",
     "-c",
-    "systemctl --user stop '" + UNIT_NAME + ".timer' '" + UNIT_NAME + ".service' >/dev/null 2>&1 || true; "
-      + "systemctl --user reset-failed '" + UNIT_NAME + ".service' '" + UNIT_NAME + ".timer' >/dev/null 2>&1 || true; "
-      + "systemd-run --user --collect --quiet --unit='" + UNIT_NAME + "' --on-active=" + n
-      + "s --timer-property=AccuracySec=1s omarchy-system-shutdown"
+    "unit='" + UNIT_NAME + "'; "
+      + "runtime=\"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}\"; "
+      + "cmd='" + cmd + "'; "
+      + "[ -x \"$cmd\" ] || cmd=$(command -v omarchy-system-shutdown); "
+      + "[ -n \"$cmd\" ] || cmd=omarchy-system-shutdown; "
+      + "systemctl --user stop \"$unit.timer\" \"$unit.service\" >/dev/null 2>&1 || true; "
+      + "systemctl --user reset-failed \"$unit.service\" \"$unit.timer\" >/dev/null 2>&1 || true; "
+      + "rm -f \"$runtime/systemd/transient/$unit.timer\" \"$runtime/systemd/transient/$unit.service\"; "
+      + "systemctl --user daemon-reload >/dev/null 2>&1 || true; "
+      + "i=0; "
+      + "while [ \"$i\" -lt 8 ]; do "
+      + "systemd-run --user --collect --quiet --unit=\"$unit\" --on-active=" + n
+      + "s --timer-property=AccuracySec=1s \"$cmd\" && exit 0; "
+      + "i=$((i+1)); "
+      + "systemctl --user stop \"$unit.timer\" \"$unit.service\" >/dev/null 2>&1 || true; "
+      + "sleep 0.05; "
+      + "done; "
+      + "exit 1"
   ]
 }
 
@@ -263,7 +279,9 @@ function timerActiveCommand() {
   return ["systemctl", "--user", "is-active", "--quiet", UNIT_NAME + ".timer"]
 }
 
-function shutdownCommand() {
+function shutdownCommand(shutdownBin) {
+  var cmd = String(shutdownBin || "").trim()
+  if (cmd !== "") return [cmd]
   return ["omarchy-system-shutdown"]
 }
 

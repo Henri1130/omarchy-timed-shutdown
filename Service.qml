@@ -8,6 +8,7 @@ Item {
 
   property var shell: null
   property var manifest: null
+  property string omarchyPath: String(Quickshell.env("OMARCHY_PATH") || "/usr/share/omarchy")
 
   property bool active: false
   property bool firing: false
@@ -19,8 +20,10 @@ Item {
   property bool restoring: false
   property string lastError: ""
   property bool disableNotifications: Model.DEFAULT_DISABLE_NOTIFICATIONS
+  property bool scheduleAborting: false
 
   readonly property string runtimeDir: String(Quickshell.env("XDG_RUNTIME_DIR") || "")
+  readonly property string shutdownBin: (root.omarchyPath || "/usr/share/omarchy") + "/bin/omarchy-system-shutdown"
   readonly property string stateFilePath: Model.statePath(runtimeDir)
   readonly property string remainingLabel: Model.formatRemaining(remainingSeconds)
   readonly property string durationLabel: Model.formatDuration(durationSeconds || lastDurationSec)
@@ -143,7 +146,7 @@ Item {
     root.deadlineMs = 0
     root.persistState()
     root.stopBackup()
-    shutdownProc.command = Model.shutdownCommand()
+    shutdownProc.command = Model.shutdownCommand(root.shutdownBin)
     shutdownProc.startDetached()
     root.firing = false
   }
@@ -177,8 +180,11 @@ Item {
   }
 
   function scheduleBackup(seconds) {
-    if (scheduleProc.running) scheduleProc.running = false
-    scheduleProc.command = Model.startTimerCommand(seconds)
+    if (scheduleProc.running) {
+      root.scheduleAborting = true
+      scheduleProc.running = false
+    }
+    scheduleProc.command = Model.startTimerCommand(seconds, root.shutdownBin)
     scheduleProc.running = true
   }
 
@@ -237,8 +243,12 @@ Item {
     id: scheduleProc
     stderr: StdioCollector { id: scheduleErr; waitForEnd: true }
     onExited: function(exitCode) {
+      if (root.scheduleAborting) {
+        root.scheduleAborting = false
+        return
+      }
       if (exitCode !== 0)
-        root.lastError = String(scheduleErr.text || "Could not schedule the backup shutdown timer.").trim()
+        console.warn("timed-shutdown backup timer failed:", String(scheduleErr.text || "").trim())
     }
   }
 

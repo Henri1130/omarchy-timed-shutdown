@@ -18,9 +18,6 @@ Panel {
   property int customSeconds: Model.DEFAULT_SECONDS
   property bool customFocused: false
   property bool customTyping: false
-  property string customDraft: ""
-  property string lastTypedDigit: ""
-  property double lastTypedAt: 0
 
   property int serviceNonce: 0
   readonly property var shutdownService: {
@@ -81,49 +78,65 @@ Panel {
     if (root.customFocused || root.customTyping) return
     var last = shutdownService ? shutdownService.lastDurationSec : Model.DEFAULT_SECONDS
     root.customSeconds = Model.clampSeconds(last) || Model.DEFAULT_SECONDS
-    root.customDraft = ""
+    root.setFieldText(String(root.customSeconds))
   }
 
   function stopCustomTyping() {
     root.customTyping = false
-    root.customDraft = ""
   }
 
-  function applyCustomDraft(draft) {
-    root.customDraft = String(draft || "")
-    var n = Model.secondsFromDraft(root.customDraft, root.customSeconds)
-    root.customSeconds = n > 0 ? n : 0
+  function setFieldText(text) {
+    if (!customField) return
+    if (customField.text === String(text)) return
+    customField.text = String(text)
+  }
+
+  function applyFromField() {
+    if (!customField) return 0
+    var n = parseInt(String(customField.text).trim(), 10)
+    if (!isFinite(n) || n < 0) {
+      root.customSeconds = 0
+      return 0
+    }
+    if (n > Model.MAX_SECONDS) {
+      n = Model.MAX_SECONDS
+      root.setFieldText(String(n))
+    }
+    root.customSeconds = n
+    return n
   }
 
   function typeCustomDigit(digit) {
-    var now = Date.now()
-    if (digit === root.lastTypedDigit && now - root.lastTypedAt < 50) return
-    root.lastTypedDigit = digit
-    root.lastTypedAt = now
-    var next = Model.nextCustomDraft(root.customDraft, root.customTyping, digit)
-    if (next === "") return
+    var d = String(digit)
+    if (d.length !== 1 || d < "0" || d > "9") return
     root.cursorActive = true
     root.cursorIndex = root.startIndex
     root.customTyping = true
-    root.applyCustomDraft(next)
-  }
 
-  function backspaceCustom() {
-    if (!root.customTyping) {
-      root.customTyping = true
-      root.customDraft = String(root.customSeconds)
+    if (!customField.activeFocus) {
+      root.setFieldText(d)
+      customField.forceActiveFocus()
+      customField.cursorPosition = d.length
+      root.applyFromField()
+      return
     }
-    root.cursorActive = true
-    root.cursorIndex = root.startIndex
-    root.applyCustomDraft(Model.backspaceCustomDraft(root.customDraft))
+
+    var t = String(customField.text)
+    var start = customField.selectionStart
+    var end = customField.selectionEnd
+    if (t.length >= 5 && start === end && start >= t.length) return
+    customField.text = t.substring(0, start) + d + t.substring(end)
+    customField.cursorPosition = start + d.length
+    root.applyFromField()
   }
 
   function nudgeCustom(delta) {
     root.stopCustomTyping()
-    var n = (customField.field ? customField.field.value : root.customSeconds) + delta
+    var n = root.applyFromField() + delta
     if (n < Model.MIN_SECONDS) n = Model.MIN_SECONDS
     if (n > Model.MAX_SECONDS) n = Model.MAX_SECONDS
     root.customSeconds = n
+    root.setFieldText(String(n))
     root.cursorActive = true
     root.cursorIndex = root.startIndex
   }
@@ -145,15 +158,18 @@ Panel {
     }
 
     var onCustom = root.customTyping || (root.cursorActive && root.cursorIndex === root.startIndex)
+    if (customField && customField.activeFocus) {
+      if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) return false
+      if (event.key === Qt.Key_Backspace || event.key === Qt.Key_Delete) return false
+    }
+
     if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
       if (!onCustom && !root.customTyping) return false
       root.startCustom()
       return true
     }
     if (event.key === Qt.Key_Backspace || event.key === Qt.Key_Delete) {
-      if (!onCustom && !root.customTyping) return false
-      root.backspaceCustom()
-      return true
+      return false
     }
     if (event.key === Qt.Key_Escape && root.customTyping) {
       root.stopCustomTyping()
@@ -182,8 +198,9 @@ Panel {
   }
 
   function startCustom() {
-    var n = root.customSeconds
+    var n = Model.clampSeconds(root.applyFromField())
     root.stopCustomTyping()
+    if (customField) customField.focus = false
     root.startSeconds(n)
   }
 
@@ -389,9 +406,9 @@ Panel {
 
           Text {
             width: parent.width
-            text: root.customTyping && root.customDraft === ""
-              ? "Type a duration in seconds"
-              : Model.formatDuration(root.customSeconds)
+            text: root.customSeconds > 0
+              ? Model.formatDuration(root.customSeconds)
+              : "Type a duration in seconds"
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -401,27 +418,60 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            NumberField {
+            TextField {
               id: customField
-              label: ""
-              value: root.customSeconds
-              from: 0
-              to: Model.MAX_SECONDS
-              stepSize: 1
-              fieldWidth: Style.space(140)
+              width: Style.space(140)
+              text: String(Model.DEFAULT_SECONDS)
+              placeholderText: "seconds"
+              inputMethodHints: Qt.ImhDigitsOnly
+              validator: IntValidator { bottom: 0; top: Model.MAX_SECONDS }
               foreground: root.foreground
-              fontFamily: root.fontFamily
+              font.family: root.fontFamily
               hasCursor: (root.cursorActive && root.cursorIndex === root.startIndex) || root.customTyping
-              onModified: function(value) {
-                root.stopCustomTyping()
-                root.customSeconds = value < Model.MIN_SECONDS ? Model.MIN_SECONDS : value
-              }
-              onHovered: function(hovered) {
+              onHoveredChanged: {
                 if (hovered) {
                   root.cursorActive = true
                   root.cursorIndex = root.startIndex
                 }
               }
+              onActiveFocusChanged: {
+                root.customFocused = activeFocus
+                if (activeFocus) {
+                  root.cursorActive = true
+                  root.cursorIndex = root.startIndex
+                  if (!root.customTyping) selectAll()
+                } else {
+                  root.applyFromField()
+                  root.stopCustomTyping()
+                }
+              }
+              onTextEdited: root.applyFromField()
+              onAccepted: root.startCustom()
+              Keys.onEscapePressed: {
+                focus = false
+                root.stopCustomTyping()
+                if (keyRoot) keyRoot.forceActiveFocus()
+              }
+            }
+
+            Button {
+              text: "−"
+              width: Style.space(36)
+              fontFamily: root.fontFamily
+              fontSize: Style.font.body
+              foreground: root.foreground
+              bordered: true
+              onClicked: root.nudgeCustom(-1)
+            }
+
+            Button {
+              text: "+"
+              width: Style.space(36)
+              fontFamily: root.fontFamily
+              fontSize: Style.font.body
+              foreground: root.foreground
+              bordered: true
+              onClicked: root.nudgeCustom(1)
             }
 
             Button {
@@ -497,14 +547,4 @@ Panel {
     }
   }
 
-  Connections {
-    target: customField.field
-    function onActiveFocusChanged() {
-      root.customFocused = customField.field.activeFocus
-      if (customField.field.activeFocus) {
-        root.cursorActive = true
-        root.cursorIndex = root.startIndex
-      }
-    }
-  }
 }
