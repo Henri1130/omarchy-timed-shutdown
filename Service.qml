@@ -153,11 +153,26 @@ Item {
 
   function persistState() {
     if (!root.stateReady || root.stateFilePath === "") return
+    stateFile.path = root.stateFilePath
     stateFile.setText(Model.serializeState({
       deadlineMs: root.active ? root.deadlineMs : 0,
       durationSec: root.active ? root.durationSeconds : 0,
       lastDurationSec: root.lastDurationSec
     }) + "\n")
+  }
+
+  function loadPersistedState() {
+    if (root.stateFilePath === "") {
+      root.stateReady = true
+      return
+    }
+    var command = Model.loadStateCommand(root.stateFilePath)
+    if (!command.length) {
+      root.stateReady = true
+      return
+    }
+    loadStateProc.command = command
+    loadStateProc.running = true
   }
 
   function applyState(raw) {
@@ -223,20 +238,27 @@ Item {
 
   FileView {
     id: stateFile
-    path: root.stateFilePath
-    watchChanges: true
+    // Writes only. Restore uses loadStateCommand so a FIFO or oversized
+    // replacement at this predictable runtime path cannot stall the shell.
+    preload: false
+    watchChanges: false
     atomicWrites: true
+    blockLoading: false
+    blockAllReads: false
+    blockWrites: false
     printErrors: false
-    onLoaded: {
-      if (!root.stateReady) {
-        root.applyState(text())
-        root.stateReady = true
-      }
-    }
-    onLoadFailed: {
+  }
+
+  Process {
+    id: loadStateProc
+    stdout: StdioCollector { id: loadStateOut; waitForEnd: true }
+    stderr: StdioCollector { id: loadStateErr; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (root.stateReady) return
+      if (exitCode === 0) root.applyState(loadStateOut.text)
+      else console.warn("timed-shutdown: ignored unsafe runtime state file:", String(loadStateErr.text || "").trim())
       root.stateReady = true
     }
-    onFileChanged: reload()
   }
 
   Process {
@@ -279,8 +301,7 @@ Item {
 
   Component.onCompleted: {
     root.syncSettings()
-    if (root.stateFilePath !== "") stateFile.reload()
-    else root.stateReady = true
+    root.loadPersistedState()
   }
 
   Component.onDestruction: {

@@ -5,6 +5,32 @@ var MAX_SECONDS = 86400
 var DEFAULT_SECONDS = 60
 var DEFAULT_DISABLE_NOTIFICATIONS = true
 var WARN_SECONDS = [60, 10]
+var MAX_STATE_BYTES = 4096
+var LOAD_STATE_PY = [
+  "import os, stat, sys",
+  "path = sys.argv[1]",
+  "limit = int(sys.argv[2])",
+  "flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | getattr(os, 'O_NOFOLLOW', 0)",
+  "try:",
+  "    fd = os.open(path, flags)",
+  "except FileNotFoundError:",
+  "    raise SystemExit(0)",
+  "except OSError:",
+  "    raise SystemExit(2)",
+  "try:",
+  "    st = os.fstat(fd)",
+  "    if (not stat.S_ISREG(st.st_mode)) or st.st_size > limit:",
+  "        raise SystemExit(1)",
+  "    try:",
+  "        data = os.read(fd, limit + 1)",
+  "    except BlockingIOError:",
+  "        raise SystemExit(1)",
+  "    if len(data) > limit:",
+  "        raise SystemExit(1)",
+  "    sys.stdout.buffer.write(data)",
+  "finally:",
+  "    os.close(fd)"
+].join("\n")
 
 function presets() {
   return [
@@ -208,7 +234,9 @@ function emptyState(lastDurationSec) {
 
 function parseState(raw) {
   var fallback = emptyState(DEFAULT_SECONDS)
-  var text = String(raw || "").trim()
+  var text = String(raw || "")
+  if (text.length > MAX_STATE_BYTES) return fallback
+  text = text.trim()
   if (text === "") return fallback
   try {
     var parsed = JSON.parse(text)
@@ -236,6 +264,22 @@ function statePath(runtimeDir) {
   var dir = String(runtimeDir || "").replace(/\/+$/, "")
   if (dir === "") return ""
   return dir + "/" + PLUGIN_ID + ".json"
+}
+
+function loadStateCommand(path) {
+  var p = String(path || "")
+  if (p === "") return []
+  return [
+    "/usr/bin/timeout",
+    "--signal=KILL",
+    "1",
+    "/usr/bin/python3",
+    "-I",
+    "-c",
+    LOAD_STATE_PY,
+    p,
+    String(MAX_STATE_BYTES)
+  ]
 }
 
 function startTimerCommand(seconds, shutdownBin) {
@@ -349,6 +393,8 @@ if (typeof module !== "undefined") {
     parseState: parseState,
     serializeState: serializeState,
     statePath: statePath,
+    MAX_STATE_BYTES: MAX_STATE_BYTES,
+    loadStateCommand: loadStateCommand,
     startTimerCommand: startTimerCommand,
     cancelTimerCommand: cancelTimerCommand,
     timerActiveCommand: timerActiveCommand,

@@ -58,6 +58,72 @@ test("state round-trips and ignores a deadline that has already passed", () => {
     lastDurationSec: 90
   })
   assert.equal(Model.parseState("not-json").lastDurationSec, 60)
+  assert.ok(raw.length < Model.MAX_STATE_BYTES)
+  assert.equal(Model.parseState("x".repeat(Model.MAX_STATE_BYTES + 1)).lastDurationSec, 60)
+})
+
+test("loadStateCommand bounds the restore path to a small nonblocking regular file", () => {
+  const fs = require("node:fs")
+  const os = require("node:os")
+  const path = require("node:path")
+  const { spawnSync } = require("node:child_process")
+
+  const command = Model.loadStateCommand("/run/user/1000/henri.timed-shutdown.json")
+  assert.deepEqual(command.slice(0, 6), [
+    "/usr/bin/timeout",
+    "--signal=KILL",
+    "1",
+    "/usr/bin/python3",
+    "-I",
+    "-c"
+  ])
+  assert.match(command[6], /O_NONBLOCK/)
+  assert.match(command[6], /O_NOFOLLOW/)
+  assert.match(command[6], /S_ISREG/)
+  assert.equal(command[8], String(Model.MAX_STATE_BYTES))
+  assert.deepEqual(Model.loadStateCommand(""), [])
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "timed-shutdown-state-"))
+  const run = (target) => {
+    const cmd = Model.loadStateCommand(target)
+    return spawnSync(cmd[0], cmd.slice(1), { encoding: "buffer", timeout: 2000 })
+  }
+  try {
+    const good = path.join(dir, "good.json")
+    const huge = path.join(dir, "huge.json")
+    const fifo = path.join(dir, "fifo.json")
+    const link = path.join(dir, "link.json")
+    const missing = path.join(dir, "missing.json")
+    const payload = Model.serializeState({
+      deadlineMs: 123,
+      durationSec: 900,
+      lastDurationSec: 90
+    }) + "\n"
+    fs.writeFileSync(good, payload)
+    fs.writeFileSync(huge, "x".repeat(Model.MAX_STATE_BYTES + 1))
+    const fifoMade = spawnSync("mkfifo", [fifo], { encoding: "utf8" })
+    assert.equal(fifoMade.status, 0, fifoMade.stderr)
+    fs.symlinkSync(good, link)
+
+    const ok = run(good)
+    assert.equal(ok.status, 0)
+    assert.deepEqual(Model.parseState(ok.stdout.toString("utf8")), {
+      deadlineMs: 123,
+      durationSec: 900,
+      lastDurationSec: 90
+    })
+
+    assert.notEqual(run(huge).status, 0)
+    assert.notEqual(run(fifo).status, 0)
+    assert.notEqual(run(link).status, 0)
+    assert.notEqual(run(dir).status, 0)
+
+    const miss = run(missing)
+    assert.equal(miss.status, 0)
+    assert.equal(miss.stdout.length, 0)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test("number-row and keypad digits build a custom duration, replacing on the first key", () => {

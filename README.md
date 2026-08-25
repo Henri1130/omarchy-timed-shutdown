@@ -94,7 +94,8 @@ It does:
 - Run `omarchy-system-shutdown` when the countdown reaches zero
 - Send desktop notifications for start, 60s/10s warnings, and cancel
 - Read and write `$XDG_RUNTIME_DIR/henri.timed-shutdown.json` so a shell
-  reload can restore an in-progress countdown
+  reload can restore an in-progress countdown. Restore opens that path
+  nonblocking, requires a regular file, and reads at most 4KiB.
 
 It does not access the network or change Hyprland config.
 
