@@ -20,7 +20,7 @@ Item {
   property bool restoring: false
   property string lastError: ""
   property bool disableNotifications: Model.DEFAULT_DISABLE_NOTIFICATIONS
-  property bool scheduleAborting: false
+  property var backupOps: Model.emptyBackupOps()
 
   readonly property string runtimeDir: String(Quickshell.env("XDG_RUNTIME_DIR") || "")
   readonly property string shutdownBin: (root.omarchyPath || "/usr/share/omarchy") + "/bin/omarchy-system-shutdown"
@@ -195,18 +195,32 @@ Item {
   }
 
   function scheduleBackup(seconds) {
-    if (scheduleProc.running) {
-      root.scheduleAborting = true
-      scheduleProc.running = false
-    }
-    scheduleProc.command = Model.startTimerCommand(seconds, root.shutdownBin)
-    scheduleProc.running = true
+    root.backupOps = Model.requestBackupStart(root.backupOps, seconds)
+    root.syncBackup()
   }
 
   function stopBackup() {
-    if (cancelProc.running) return
-    cancelProc.command = Model.cancelTimerCommand()
-    cancelProc.running = true
+    root.backupOps = Model.requestBackupStop(root.backupOps)
+    root.syncBackup()
+  }
+
+  // systemd-run and unit stop share one generation queue: a stop waits
+  // for every in-flight scheduler to exit, a completed schedule while
+  // inactive is cancelled, and a newer start is applied only after an
+  // older stop finishes.
+  function syncBackup() {
+    var action = Model.nextBackupAction(root.backupOps)
+    if (action.action === "schedule") {
+      root.backupOps = Model.markBackupStarted(root.backupOps, "schedule")
+      scheduleProc.command = Model.startTimerCommand(action.seconds, root.shutdownBin)
+      scheduleProc.running = true
+      return
+    }
+    if (action.action === "cancel") {
+      root.backupOps = Model.markBackupStarted(root.backupOps, "cancel")
+      cancelProc.command = Model.cancelTimerCommand()
+      cancelProc.running = true
+    }
   }
 
   function ensureBackup() {
@@ -265,17 +279,21 @@ Item {
     id: scheduleProc
     stderr: StdioCollector { id: scheduleErr; waitForEnd: true }
     onExited: function(exitCode) {
-      if (root.scheduleAborting) {
-        root.scheduleAborting = false
-        return
-      }
-      if (exitCode !== 0)
+      var ops = root.backupOps
+      var wanted = ops && ops.wantTimer === true && ops.wantGen === ops.inFlightGen
+      root.backupOps = Model.markScheduleExited(root.backupOps)
+      if (wanted && exitCode !== 0)
         console.warn("timed-shutdown backup timer failed:", String(scheduleErr.text || "").trim())
+      root.syncBackup()
     }
   }
 
   Process {
     id: cancelProc
+    onExited: function() {
+      root.backupOps = Model.markCancelExited(root.backupOps)
+      root.syncBackup()
+    }
   }
 
   Process {

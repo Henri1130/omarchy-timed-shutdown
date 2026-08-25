@@ -323,6 +323,86 @@ function timerActiveCommand() {
   return ["systemctl", "--user", "is-active", "--quiet", UNIT_NAME + ".timer"]
 }
 
+function emptyBackupOps() {
+  return {
+    wantTimer: false,
+    wantSeconds: 0,
+    wantGen: 0,
+    appliedGen: 0,
+    scheduleInFlight: false,
+    cancelInFlight: false,
+    inFlightGen: 0
+  }
+}
+
+function copyBackupOps(ops) {
+  var src = ops && typeof ops === "object" ? ops : emptyBackupOps()
+  return {
+    wantTimer: src.wantTimer === true,
+    wantSeconds: clampSeconds(src.wantSeconds),
+    wantGen: Math.max(0, Math.floor(Number(src.wantGen) || 0)),
+    appliedGen: Math.max(0, Math.floor(Number(src.appliedGen) || 0)),
+    scheduleInFlight: src.scheduleInFlight === true,
+    cancelInFlight: src.cancelInFlight === true,
+    inFlightGen: Math.max(0, Math.floor(Number(src.inFlightGen) || 0))
+  }
+}
+
+function requestBackupStart(ops, seconds) {
+  var n = clampSeconds(seconds)
+  var next = copyBackupOps(ops)
+  if (n <= 0) return next
+  next.wantTimer = true
+  next.wantSeconds = n
+  next.wantGen += 1
+  return next
+}
+
+function requestBackupStop(ops) {
+  var next = copyBackupOps(ops)
+  next.wantTimer = false
+  next.wantSeconds = 0
+  next.wantGen += 1
+  return next
+}
+
+function nextBackupAction(ops) {
+  var s = copyBackupOps(ops)
+  if (s.scheduleInFlight || s.cancelInFlight)
+    return { action: "wait" }
+  if (s.appliedGen === s.wantGen)
+    return { action: "idle" }
+  if (s.wantTimer)
+    return { action: "schedule", seconds: s.wantSeconds }
+  return { action: "cancel" }
+}
+
+function markBackupStarted(ops, kind) {
+  var next = copyBackupOps(ops)
+  next.inFlightGen = next.wantGen
+  if (kind === "schedule") next.scheduleInFlight = true
+  else if (kind === "cancel") next.cancelInFlight = true
+  return next
+}
+
+function markScheduleExited(ops) {
+  var next = copyBackupOps(ops)
+  next.scheduleInFlight = false
+  if (next.wantTimer && next.wantGen === next.inFlightGen)
+    next.appliedGen = next.inFlightGen
+  next.inFlightGen = 0
+  return next
+}
+
+function markCancelExited(ops) {
+  var next = copyBackupOps(ops)
+  next.cancelInFlight = false
+  if (!next.wantTimer)
+    next.appliedGen = next.wantGen
+  next.inFlightGen = 0
+  return next
+}
+
 function shutdownCommand(shutdownBin) {
   var cmd = String(shutdownBin || "").trim()
   if (cmd !== "") return [cmd]
@@ -398,6 +478,13 @@ if (typeof module !== "undefined") {
     startTimerCommand: startTimerCommand,
     cancelTimerCommand: cancelTimerCommand,
     timerActiveCommand: timerActiveCommand,
+    emptyBackupOps: emptyBackupOps,
+    requestBackupStart: requestBackupStart,
+    requestBackupStop: requestBackupStop,
+    nextBackupAction: nextBackupAction,
+    markBackupStarted: markBackupStarted,
+    markScheduleExited: markScheduleExited,
+    markCancelExited: markCancelExited,
     shutdownCommand: shutdownCommand,
     notifyStartCommand: notifyStartCommand,
     notifyWarningCommand: notifyWarningCommand,

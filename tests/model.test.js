@@ -163,3 +163,100 @@ test("systemd backup commands stay inside the user session and call omarchy-syst
   assert.match(Model.cancelTimerCommand()[2], /systemctl --user stop/)
   assert.deepEqual(Model.shutdownCommand(), ["omarchy-system-shutdown"])
 })
+
+function takeBackupAction(ops) {
+  const action = Model.nextBackupAction(ops)
+  if (action.action === "schedule")
+    return { ops: Model.markBackupStarted(ops, "schedule"), action }
+  if (action.action === "cancel")
+    return { ops: Model.markBackupStarted(ops, "cancel"), action }
+  return { ops, action }
+}
+
+test("cancel waits for every scheduler generation to exit before the unit stop", () => {
+  let ops = Model.requestBackupStart(Model.emptyBackupOps(), 90)
+  let step = takeBackupAction(ops)
+  assert.equal(step.action.action, "schedule")
+  assert.equal(step.action.seconds, 90)
+  ops = step.ops
+  assert.equal(Model.nextBackupAction(ops).action, "wait")
+
+  ops = Model.requestBackupStop(ops)
+  assert.equal(Model.nextBackupAction(ops).action, "wait")
+  assert.notEqual(Model.nextBackupAction(ops).action, "cancel")
+
+  ops = Model.markScheduleExited(ops)
+  step = takeBackupAction(ops)
+  assert.equal(step.action.action, "cancel")
+  ops = Model.markCancelExited(step.ops)
+  assert.equal(Model.nextBackupAction(ops).action, "idle")
+})
+
+test("stale schedule completions cannot retain a timer while inactive", () => {
+  let ops = Model.requestBackupStart(Model.emptyBackupOps(), 30)
+  ops = takeBackupAction(ops).ops
+  ops = Model.requestBackupStop(ops)
+  ops = Model.markScheduleExited(ops)
+  assert.equal(ops.wantTimer, false)
+  assert.notEqual(ops.appliedGen, ops.wantGen)
+  const action = Model.nextBackupAction(ops)
+  assert.equal(action.action, "cancel")
+  assert.notEqual(action.action, "idle")
+
+  ops = takeBackupAction(ops).ops
+  ops = Model.markCancelExited(ops)
+  assert.equal(Model.nextBackupAction(ops).action, "idle")
+  assert.equal(ops.wantTimer, false)
+})
+
+test("a new start is not undone by an older cancellation", () => {
+  let ops = Model.requestBackupStart(Model.emptyBackupOps(), 90)
+  ops = takeBackupAction(ops).ops
+  ops = Model.markScheduleExited(ops)
+  assert.equal(Model.nextBackupAction(ops).action, "idle")
+
+  ops = Model.requestBackupStop(ops)
+  let step = takeBackupAction(ops)
+  assert.equal(step.action.action, "cancel")
+  ops = step.ops
+
+  ops = Model.requestBackupStart(ops, 60)
+  assert.equal(Model.nextBackupAction(ops).action, "wait")
+  assert.notEqual(Model.nextBackupAction(ops).action, "schedule")
+
+  ops = Model.markCancelExited(ops)
+  step = takeBackupAction(ops)
+  assert.equal(step.action.action, "schedule")
+  assert.equal(step.action.seconds, 60)
+  ops = Model.markScheduleExited(step.ops)
+  assert.equal(Model.nextBackupAction(ops).action, "idle")
+  assert.equal(ops.wantTimer, true)
+  assert.equal(ops.wantSeconds, 60)
+})
+
+test("reschedule waits for the older generation then starts the newer one", () => {
+  let ops = Model.requestBackupStart(Model.emptyBackupOps(), 90)
+  ops = takeBackupAction(ops).ops
+  ops = Model.requestBackupStart(ops, 15)
+  assert.equal(Model.nextBackupAction(ops).action, "wait")
+  assert.notEqual(Model.nextBackupAction(ops).action, "schedule")
+
+  ops = Model.markScheduleExited(ops)
+  const step = takeBackupAction(ops)
+  assert.equal(step.action.action, "schedule")
+  assert.equal(step.action.seconds, 15)
+})
+
+test("a start that supersedes cancel while a scheduler is in flight skips the stale stop", () => {
+  let ops = Model.requestBackupStart(Model.emptyBackupOps(), 90)
+  ops = takeBackupAction(ops).ops
+  ops = Model.requestBackupStop(ops)
+  ops = Model.requestBackupStart(ops, 60)
+  assert.equal(Model.nextBackupAction(ops).action, "wait")
+
+  ops = Model.markScheduleExited(ops)
+  const step = takeBackupAction(ops)
+  assert.equal(step.action.action, "schedule")
+  assert.equal(step.action.seconds, 60)
+  assert.notEqual(step.action.action, "cancel")
+})
