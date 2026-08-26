@@ -234,7 +234,7 @@ test("a new start is not undone by an older cancellation", () => {
   assert.equal(ops.wantSeconds, 60)
 })
 
-test("reschedule waits for the older generation then starts the newer one", () => {
+test("reschedule waits for the older generation, sweeps it, then starts the newer one", () => {
   let ops = Model.requestBackupStart(Model.emptyBackupOps(), 90)
   ops = takeBackupAction(ops).ops
   ops = Model.requestBackupStart(ops, 15)
@@ -242,12 +242,15 @@ test("reschedule waits for the older generation then starts the newer one", () =
   assert.notEqual(Model.nextBackupAction(ops).action, "schedule")
 
   ops = Model.markScheduleExited(ops)
-  const step = takeBackupAction(ops)
+  let step = takeBackupAction(ops)
+  assert.equal(step.action.action, "cancel")
+  ops = Model.markCancelExited(step.ops)
+  step = takeBackupAction(ops)
   assert.equal(step.action.action, "schedule")
   assert.equal(step.action.seconds, 15)
 })
 
-test("a start that supersedes cancel while a scheduler is in flight skips the stale stop", () => {
+test("a start that supersedes cancel sweeps any stale timer before the new schedule", () => {
   let ops = Model.requestBackupStart(Model.emptyBackupOps(), 90)
   ops = takeBackupAction(ops).ops
   ops = Model.requestBackupStop(ops)
@@ -255,8 +258,34 @@ test("a start that supersedes cancel while a scheduler is in flight skips the st
   assert.equal(Model.nextBackupAction(ops).action, "wait")
 
   ops = Model.markScheduleExited(ops)
-  const step = takeBackupAction(ops)
+  assert.equal(ops.maybeArmed, true)
+  let step = takeBackupAction(ops)
+  assert.equal(step.action.action, "cancel")
+  ops = Model.markCancelExited(step.ops)
+  step = takeBackupAction(ops)
   assert.equal(step.action.action, "schedule")
   assert.equal(step.action.seconds, 60)
-  assert.notEqual(step.action.action, "cancel")
+})
+
+test("stale schedule and cancel completions cannot clobber a newer in-flight generation", () => {
+  let ops = Model.requestBackupStart(Model.emptyBackupOps(), 90)
+  ops = takeBackupAction(ops).ops
+  const oldScheduleToken = ops.scheduleToken
+  ops = Model.markScheduleExited(ops, oldScheduleToken + 1)
+  assert.equal(ops.scheduleInFlight, true)
+  ops = Model.markScheduleExited(ops)
+  assert.equal(ops.scheduleInFlight, false)
+
+  ops = Model.requestBackupStop(ops)
+  ops = takeBackupAction(ops).ops
+  const oldCancelToken = ops.cancelToken
+  ops = Model.markCancelExited(ops, oldCancelToken + 1)
+  assert.equal(ops.cancelInFlight, true)
+  ops = Model.markCancelExited(ops)
+  assert.equal(ops.cancelInFlight, false)
+  assert.equal(Model.nextBackupAction(ops).action, "idle")
+
+  ops = Model.markScheduleExited(ops)
+  assert.equal(ops.maybeArmed, false)
+  assert.equal(Model.nextBackupAction(ops).action, "idle")
 })

@@ -206,9 +206,11 @@ Item {
 
   // systemd-run and unit stop share one generation queue: a stop waits
   // for every in-flight scheduler to exit, a completed schedule while
-  // inactive is cancelled, and a newer start is applied only after an
-  // older stop finishes.
+  // inactive is cancelled, a stale arming is swept before a newer start,
+  // and a newer start is applied only after an older stop finishes.
   function syncBackup() {
+    if (scheduleProc.running || cancelProc.running) return
+
     var action = Model.nextBackupAction(root.backupOps)
     if (action.action === "schedule") {
       root.backupOps = Model.markBackupStarted(root.backupOps, "schedule")
@@ -280,20 +282,30 @@ Item {
     stderr: StdioCollector { id: scheduleErr; waitForEnd: true }
     onExited: function(exitCode) {
       var ops = root.backupOps
-      var wanted = ops && ops.wantTimer === true && ops.wantGen === ops.inFlightGen
-      root.backupOps = Model.markScheduleExited(root.backupOps)
+      if (!ops || !ops.scheduleInFlight) return
+      var wanted = ops.wantTimer === true && ops.wantGen === ops.inFlightGen
+      root.backupOps = Model.markScheduleExited(root.backupOps, ops.scheduleToken)
       if (wanted && exitCode !== 0)
         console.warn("timed-shutdown backup timer failed:", String(scheduleErr.text || "").trim())
-      root.syncBackup()
+      backupKick.restart()
     }
   }
 
   Process {
     id: cancelProc
     onExited: function() {
-      root.backupOps = Model.markCancelExited(root.backupOps)
-      root.syncBackup()
+      var ops = root.backupOps
+      if (!ops || !ops.cancelInFlight) return
+      root.backupOps = Model.markCancelExited(root.backupOps, ops.cancelToken)
+      backupKick.restart()
     }
+  }
+
+  Timer {
+    id: backupKick
+    interval: 0
+    repeat: false
+    onTriggered: root.syncBackup()
   }
 
   Process {

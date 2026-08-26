@@ -331,7 +331,10 @@ function emptyBackupOps() {
     appliedGen: 0,
     scheduleInFlight: false,
     cancelInFlight: false,
-    inFlightGen: 0
+    inFlightGen: 0,
+    scheduleToken: 0,
+    cancelToken: 0,
+    maybeArmed: false
   }
 }
 
@@ -344,7 +347,10 @@ function copyBackupOps(ops) {
     appliedGen: Math.max(0, Math.floor(Number(src.appliedGen) || 0)),
     scheduleInFlight: src.scheduleInFlight === true,
     cancelInFlight: src.cancelInFlight === true,
-    inFlightGen: Math.max(0, Math.floor(Number(src.inFlightGen) || 0))
+    inFlightGen: Math.max(0, Math.floor(Number(src.inFlightGen) || 0)),
+    scheduleToken: Math.max(0, Math.floor(Number(src.scheduleToken) || 0)),
+    cancelToken: Math.max(0, Math.floor(Number(src.cancelToken) || 0)),
+    maybeArmed: src.maybeArmed === true
   }
 }
 
@@ -370,33 +376,51 @@ function nextBackupAction(ops) {
   var s = copyBackupOps(ops)
   if (s.scheduleInFlight || s.cancelInFlight)
     return { action: "wait" }
-  if (s.appliedGen === s.wantGen)
+  if (s.wantTimer && s.appliedGen === s.wantGen)
     return { action: "idle" }
-  if (s.wantTimer)
-    return { action: "schedule", seconds: s.wantSeconds }
-  return { action: "cancel" }
+  if (!s.wantTimer && !s.maybeArmed && s.appliedGen === s.wantGen)
+    return { action: "idle" }
+  if (!s.wantTimer)
+    return { action: "cancel" }
+  if (s.maybeArmed)
+    return { action: "cancel" }
+  return { action: "schedule", seconds: s.wantSeconds }
 }
 
 function markBackupStarted(ops, kind) {
   var next = copyBackupOps(ops)
   next.inFlightGen = next.wantGen
-  if (kind === "schedule") next.scheduleInFlight = true
-  else if (kind === "cancel") next.cancelInFlight = true
+  if (kind === "schedule") {
+    next.scheduleInFlight = true
+    next.maybeArmed = true
+    next.scheduleToken += 1
+  } else if (kind === "cancel") {
+    next.cancelInFlight = true
+    next.cancelToken += 1
+  }
   return next
 }
 
-function markScheduleExited(ops) {
+function markScheduleExited(ops, token) {
   var next = copyBackupOps(ops)
+  if (!next.scheduleInFlight) return next
+  if (token !== undefined && token !== null && String(token) !== "" && Number(token) !== next.scheduleToken)
+    return next
   next.scheduleInFlight = false
+  next.maybeArmed = true
   if (next.wantTimer && next.wantGen === next.inFlightGen)
     next.appliedGen = next.inFlightGen
   next.inFlightGen = 0
   return next
 }
 
-function markCancelExited(ops) {
+function markCancelExited(ops, token) {
   var next = copyBackupOps(ops)
+  if (!next.cancelInFlight) return next
+  if (token !== undefined && token !== null && String(token) !== "" && Number(token) !== next.cancelToken)
+    return next
   next.cancelInFlight = false
+  next.maybeArmed = false
   if (!next.wantTimer)
     next.appliedGen = next.wantGen
   next.inFlightGen = 0
