@@ -91,10 +91,11 @@ source before installing it.
 It does:
 
 - Schedule and cancel a user systemd timer named `henri-timed-shutdown`.
-  systemd-run and unit stop are serialized: cancel waits for every
-  in-flight scheduler to exit, a stale schedule cannot keep a timer
-  while inactive, and a newer start is applied only after an older
-  stop finishes.
+  The backup timer is `systemd-run` / `systemctl` argv (no shell), and
+  always runs `/usr/share/omarchy/bin/omarchy-system-shutdown`. Start
+  and cancel are serialized: cancel waits for every in-flight scheduler
+  to exit, a stale schedule cannot keep a timer while inactive, and a
+  newer start is applied only after an older stop finishes.
 - Run `omarchy-system-shutdown` when the countdown reaches zero
 - Send desktop notifications for start, 60s/10s warnings, and cancel
 - Read and write `$XDG_RUNTIME_DIR/henri.timed-shutdown.json` so a shell

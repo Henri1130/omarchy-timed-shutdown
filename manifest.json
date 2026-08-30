@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "henri.timed-shutdown",
   "name": "Timed Shutdown",
-  "version": "1.4.4",
+  "version": "1.5.0",
   "author": "Henri Dumortier",
   "license": "MIT",
   "description": "Schedule a shutdown from the Omarchy bar. Pick 15 minutes, 30 minutes, 1 hour, or 2 hours, or enter any custom duration in seconds.",

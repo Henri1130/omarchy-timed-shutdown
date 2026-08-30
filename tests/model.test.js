@@ -154,14 +154,33 @@ test("disableNotifications is on by default and only false when explicitly disab
 
 test("systemd backup commands stay inside the user session and call omarchy-system-shutdown", () => {
   const start = Model.startTimerCommand(900)
-  assert.equal(start[0], "sh")
-  assert.match(start[2], /systemd-run --user/)
-  assert.match(start[2], /unit='henri-timed-shutdown'/)
-  assert.match(start[2], /--on-active=900s/)
-  assert.match(start[2], /omarchy-system-shutdown/)
-  assert.match(start[2], /daemon-reload/)
-  assert.match(Model.cancelTimerCommand()[2], /systemctl --user stop/)
-  assert.deepEqual(Model.shutdownCommand(), ["omarchy-system-shutdown"])
+  assert.deepEqual(start, [
+    "systemd-run",
+    "--user",
+    "--collect",
+    "--quiet",
+    "--unit=henri-timed-shutdown",
+    "--on-active=900s",
+    "--timer-property=AccuracySec=1s",
+    Model.SHUTDOWN_BIN
+  ])
+  assert.deepEqual(Model.cancelTimerCommand(), [
+    "systemctl",
+    "--user",
+    "stop",
+    "henri-timed-shutdown.timer",
+    "henri-timed-shutdown.service"
+  ])
+  assert.deepEqual(Model.shutdownCommand(), [Model.SHUTDOWN_BIN])
+  assert.deepEqual(
+    Model.shutdownCommand("/tmp/evil/bin/omarchy-system-shutdown"),
+    [Model.SHUTDOWN_BIN]
+  )
+  assert.deepEqual(
+    Model.startTimerCommand(30, "/tmp/evil/shutdown")[7],
+    Model.SHUTDOWN_BIN
+  )
+  assert.deepEqual(Model.startTimerCommand(0), [])
 })
 
 function takeBackupAction(ops) {

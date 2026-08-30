@@ -282,40 +282,37 @@ function loadStateCommand(path) {
   ]
 }
 
+var SHUTDOWN_BIN = "/usr/share/omarchy/bin/omarchy-system-shutdown"
+var SHUTDOWN_BIN_ALT = "/usr/bin/omarchy-system-shutdown"
+
+function resolvedShutdownBin(shutdownBin) {
+  var cmd = String(shutdownBin || "").trim()
+  if (cmd === SHUTDOWN_BIN || cmd === SHUTDOWN_BIN_ALT) return cmd
+  return SHUTDOWN_BIN
+}
+
 function startTimerCommand(seconds, shutdownBin) {
   var n = clampSeconds(seconds)
-  var cmd = String(shutdownBin || "").trim() || "omarchy-system-shutdown"
-  cmd = cmd.replace(/'/g, "")
+  if (n <= 0) return []
   return [
-    "sh",
-    "-c",
-    "unit='" + UNIT_NAME + "'; "
-      + "runtime=\"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}\"; "
-      + "cmd='" + cmd + "'; "
-      + "[ -x \"$cmd\" ] || cmd=$(command -v omarchy-system-shutdown); "
-      + "[ -n \"$cmd\" ] || cmd=omarchy-system-shutdown; "
-      + "systemctl --user stop \"$unit.timer\" \"$unit.service\" >/dev/null 2>&1 || true; "
-      + "systemctl --user reset-failed \"$unit.service\" \"$unit.timer\" >/dev/null 2>&1 || true; "
-      + "rm -f \"$runtime/systemd/transient/$unit.timer\" \"$runtime/systemd/transient/$unit.service\"; "
-      + "systemctl --user daemon-reload >/dev/null 2>&1 || true; "
-      + "i=0; "
-      + "while [ \"$i\" -lt 8 ]; do "
-      + "systemd-run --user --collect --quiet --unit=\"$unit\" --on-active=" + n
-      + "s --timer-property=AccuracySec=1s \"$cmd\" && exit 0; "
-      + "i=$((i+1)); "
-      + "systemctl --user stop \"$unit.timer\" \"$unit.service\" >/dev/null 2>&1 || true; "
-      + "sleep 0.05; "
-      + "done; "
-      + "exit 1"
+    "systemd-run",
+    "--user",
+    "--collect",
+    "--quiet",
+    "--unit=" + UNIT_NAME,
+    "--on-active=" + n + "s",
+    "--timer-property=AccuracySec=1s",
+    resolvedShutdownBin(shutdownBin)
   ]
 }
 
 function cancelTimerCommand() {
   return [
-    "sh",
-    "-c",
-    "systemctl --user stop '" + UNIT_NAME + ".timer' '" + UNIT_NAME + ".service' >/dev/null 2>&1 || true; "
-      + "systemctl --user reset-failed '" + UNIT_NAME + ".service' '" + UNIT_NAME + ".timer' >/dev/null 2>&1 || true"
+    "systemctl",
+    "--user",
+    "stop",
+    UNIT_NAME + ".timer",
+    UNIT_NAME + ".service"
   ]
 }
 
@@ -428,9 +425,7 @@ function markCancelExited(ops, token) {
 }
 
 function shutdownCommand(shutdownBin) {
-  var cmd = String(shutdownBin || "").trim()
-  if (cmd !== "") return [cmd]
-  return ["omarchy-system-shutdown"]
+  return [resolvedShutdownBin(shutdownBin)]
 }
 
 function notifyStartCommand(durationLabel) {
@@ -499,6 +494,8 @@ if (typeof module !== "undefined") {
     statePath: statePath,
     MAX_STATE_BYTES: MAX_STATE_BYTES,
     loadStateCommand: loadStateCommand,
+    SHUTDOWN_BIN: SHUTDOWN_BIN,
+    resolvedShutdownBin: resolvedShutdownBin,
     startTimerCommand: startTimerCommand,
     cancelTimerCommand: cancelTimerCommand,
     timerActiveCommand: timerActiveCommand,
