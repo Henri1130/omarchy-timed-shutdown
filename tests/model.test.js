@@ -55,7 +55,8 @@ test("state round-trips and ignores a deadline that has already passed", () => {
   assert.deepEqual(Model.parseState(raw), {
     deadlineMs: 123,
     durationSec: 900,
-    lastDurationSec: 90
+    lastDurationSec: 90,
+    action: "shutdown"
   })
   assert.equal(Model.parseState("not-json").lastDurationSec, 60)
   assert.ok(raw.length < Model.MAX_STATE_BYTES)
@@ -110,7 +111,8 @@ test("loadStateCommand bounds the restore path to a small nonblocking regular fi
     assert.deepEqual(Model.parseState(ok.stdout.toString("utf8")), {
       deadlineMs: 123,
       durationSec: 900,
-      lastDurationSec: 90
+      lastDurationSec: 90,
+      action: "shutdown"
     })
 
     assert.notEqual(run(huge).status, 0)
@@ -307,4 +309,30 @@ test("stale schedule and cancel completions cannot clobber a newer in-flight gen
   ops = Model.markScheduleExited(ops)
   assert.equal(ops.maybeArmed, false)
   assert.equal(Model.nextBackupAction(ops).action, "idle")
+})
+
+test("shutdown stays the default action; only an exact lights-out value switches it", () => {
+  assert.equal(Model.DEFAULT_ACTION, "shutdown")
+  assert.equal(Model.actionFrom(undefined), "shutdown")
+  assert.equal(Model.actionFrom(""), "shutdown")
+  assert.equal(Model.actionFrom("bogus"), "shutdown")
+  assert.equal(Model.actionFrom("lights-out"), "lights-out")
+  // State written by the old version (no action key) restores as shutdown.
+  assert.equal(Model.parseState('{"deadlineMs":5,"durationSec":60,"lastDurationSec":60}').action, "shutdown")
+  const raw = Model.serializeState({ deadlineMs: 5, durationSec: 60, lastDurationSec: 60, action: "lights-out" })
+  assert.equal(Model.parseState(raw).action, "lights-out")
+})
+
+test("lights-out finish and backup timer turn Lights Out on and never call shutdown", () => {
+  assert.deepEqual(Model.finishCommand("lights-out"), [Model.SHELL_BIN, "-q", "henri.lights-out", "on"])
+  assert.deepEqual(Model.finishCommand("shutdown"), [Model.SHUTDOWN_BIN])
+  assert.deepEqual(Model.finishCommand(undefined), [Model.SHUTDOWN_BIN])
+  const lo = Model.startTimerCommand(60, Model.SHUTDOWN_BIN, "lights-out")
+  assert.equal(lo.indexOf(Model.SHUTDOWN_BIN), -1)
+  assert.ok(!lo.some((a) => /shutdown|poweroff/.test(a) && !/henri-timed-shutdown/.test(a)))
+  assert.deepEqual(lo.slice(-4), [Model.SHELL_BIN, "-q", "henri.lights-out", "on"])
+  assert.ok(lo.includes("--unit=henri-timed-shutdown"))
+  // Default and explicit shutdown keep the exact original argv.
+  assert.deepEqual(Model.startTimerCommand(900, Model.SHUTDOWN_BIN, "shutdown"), Model.startTimerCommand(900))
+  assert.equal(Model.startTimerCommand(0, null, "lights-out").length, 0)
 })

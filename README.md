@@ -20,6 +20,16 @@ An Omarchy bar plugin that shuts this computer down after a countdown.
 When the timer ends it runs `omarchy system shutdown`, which closes windows
 and then powers off.
 
+**When timer ends** lets you pick **Shut down** (default) or **Lights Out**.
+Lights Out runs `omarchy-shell henri.lights-out on` (the `henri.lights-out`
+plugin) instead of shutting down. Switching during a countdown also re-arms
+the systemd backup timer. From a terminal:
+
+```bash
+omarchy-shell henri.timed-shutdown setAction lights-out   # or: shutdown
+omarchy-shell henri.timed-shutdown getAction
+```
+
 ## Install
 
 Review the repository, then add the plugin:

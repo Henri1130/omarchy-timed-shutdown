@@ -38,9 +38,15 @@ Panel {
   readonly property bool disableNotifications: shutdownService
     ? shutdownService.disableNotifications === true
     : Model.DEFAULT_DISABLE_NOTIFICATIONS
+  readonly property string timerAction: shutdownService
+    ? Model.actionFrom(shutdownService.action)
+    : Model.DEFAULT_ACTION
+  readonly property bool lightsOutAction: timerAction === Model.ACTION_LIGHTS_OUT
+  readonly property var actionItems: Model.actions()
   readonly property var presetItems: Model.presets()
   readonly property int startIndex: presetItems.length
-  readonly property int notifyIndex: startIndex + 1
+  readonly property int actionIndex: startIndex + 1
+  readonly property int notifyIndex: actionIndex + 1
   readonly property int cancelIndex: notifyIndex + 1
   readonly property int itemCount: cancelIndex + 1
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -209,6 +215,15 @@ Panel {
     shutdownService.cancel()
   }
 
+  function setAction(value) {
+    if (!shutdownService || typeof shutdownService.setAction !== "function") return
+    shutdownService.setAction(value)
+  }
+
+  function toggleAction() {
+    root.setAction(root.lightsOutAction ? Model.ACTION_SHUTDOWN : Model.ACTION_LIGHTS_OUT)
+  }
+
   function toggleDisableNotifications() {
     if (!shutdownService || typeof shutdownService.setDisableNotifications !== "function") return
     shutdownService.setDisableNotifications(!root.disableNotifications)
@@ -222,6 +237,10 @@ Panel {
     }
     if (root.cursorIndex === root.startIndex) {
       root.startCustom()
+      return
+    }
+    if (root.cursorIndex === root.actionIndex) {
+      root.toggleAction()
       return
     }
     if (root.cursorIndex === root.notifyIndex) {
@@ -302,7 +321,7 @@ Panel {
 
         PanelHero {
           title: "Timed Shutdown"
-          meta: root.timerActive ? "Shutting down in" : "Idle"
+          meta: root.timerActive ? Model.actionCountdownLabel(root.timerAction) : "Idle"
           detail: root.timerActive ? root.remainingLabel : ""
           foreground: root.foreground
           fontFamily: root.fontFamily
@@ -501,6 +520,49 @@ Panel {
           spacing: Style.space(10)
 
           PanelSectionHeader {
+            text: "WHEN TIMER ENDS"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          Row {
+            id: actionRow
+            width: parent.width
+            spacing: Style.space(6)
+
+            Repeater {
+              model: root.actionItems
+
+              Button {
+                required property var modelData
+                width: (actionRow.width - actionRow.spacing) / 2
+                text: String(modelData.label)
+                iconText: String(modelData.icon)
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                foreground: root.foreground
+                bordered: true
+                active: root.timerAction === modelData.id
+                hasCursor: root.cursorActive && root.cursorIndex === root.actionIndex && root.timerAction === modelData.id
+                onClicked: root.setAction(modelData.id)
+                onHovered: function(hovered) {
+                  if (hovered) {
+                    root.cursorActive = true
+                    root.cursorIndex = root.actionIndex
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        PanelSeparator { foreground: root.foreground }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(10)
+
+          PanelSectionHeader {
             text: "OPTIONS"
             foreground: root.foreground
             fontFamily: root.fontFamily
@@ -526,7 +588,7 @@ Panel {
 
         Button {
           width: parent.width
-          text: "Cancel shutdown"
+          text: root.lightsOutAction ? "Cancel Lights Out" : "Cancel shutdown"
           iconText: "󰜺"
           fontFamily: root.fontFamily
           fontSize: Style.font.body

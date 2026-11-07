@@ -21,6 +21,11 @@ Item {
   property string lastError: ""
   property bool disableNotifications: Model.DEFAULT_DISABLE_NOTIFICATIONS
   property var backupOps: Model.emptyBackupOps()
+  // What happens when the countdown ends: "shutdown" (default) or "lights-out".
+  property string action: Model.DEFAULT_ACTION
+  // Set while our own settings write is in flight, so a stale barConfig
+  // notification cannot flip the action back before shell.json catches up.
+  property string pendingAction: ""
 
   readonly property string runtimeDir: String(Quickshell.env("XDG_RUNTIME_DIR") || "")
   readonly property string shutdownBin: (root.omarchyPath || "/usr/share/omarchy") + "/bin/omarchy-system-shutdown"
@@ -29,6 +34,9 @@ Item {
   readonly property string durationLabel: Model.formatDuration(durationSeconds || lastDurationSec)
   readonly property string presetId: Model.presetIdForSeconds(durationSeconds)
   readonly property bool urgent: active && remainingSeconds > 0 && remainingSeconds <= 60
+  readonly property bool lightsOut: action === Model.ACTION_LIGHTS_OUT
+  readonly property string actionTitle: Model.actionTitle(action)
+  readonly property string countdownLabel: Model.actionCountdownLabel(action)
 
   function statusPayload() {
     return JSON.stringify({
@@ -37,7 +45,8 @@ Item {
       durationSeconds: root.durationSeconds,
       deadlineMs: root.deadlineMs,
       lastDurationSec: root.lastDurationSec,
-      disableNotifications: root.disableNotifications
+      disableNotifications: root.disableNotifications,
+      action: root.action
     })
   }
 
@@ -60,6 +69,13 @@ Item {
 
   function syncSettings() {
     var settings = root.entrySettings()
+    var fromSettings = Model.actionFrom(settings ? settings.action : undefined)
+    if (root.pendingAction !== "") {
+      if (fromSettings === root.pendingAction) root.pendingAction = ""
+    } else if (!root.active) {
+      // A running countdown keeps the action it was restored or started with.
+      root.action = fromSettings
+    }
     if (!settings || settings.disableNotifications === undefined) {
       root.disableNotifications = Model.DEFAULT_DISABLE_NOTIFICATIONS
       return
@@ -75,6 +91,25 @@ Item {
     entry.disableNotifications = root.disableNotifications
     if (root.shell && typeof root.shell.updateEntryInline === "function")
       root.shell.updateEntryInline(Model.PLUGIN_ID, entry)
+  }
+
+  function setAction(value) {
+    var next = Model.actionFrom(value)
+    var changed = next !== root.action
+    root.action = next
+    root.pendingAction = next
+    var entry = { id: Model.PLUGIN_ID }
+    var current = root.entrySettings() || ({})
+    for (var key in current) entry[key] = current[key]
+    entry.action = next
+    if (root.shell && typeof root.shell.updateEntryInline === "function")
+      root.shell.updateEntryInline(Model.PLUGIN_ID, entry)
+    // Switching during a countdown re-arms the systemd backup with the new action.
+    if (changed && root.active) {
+      root.persistState()
+      root.scheduleBackup(Math.max(Model.MIN_SECONDS, root.remainingSeconds))
+    }
+    return next
   }
 
   function sendNotification(command) {
@@ -99,14 +134,14 @@ Item {
     root.active = true
     root.persistState()
     root.scheduleBackup(n)
-    root.sendNotification(Model.notifyStartCommand(Model.formatDuration(n)))
+    root.sendNotification(Model.notifyStartCommand(Model.formatDuration(n), root.action))
     return "ok"
   }
 
   function cancel() {
     var wasActive = root.active
     root.clearTimer(true)
-    if (wasActive) root.sendNotification(Model.notifyCancelCommand())
+    if (wasActive) root.sendNotification(Model.notifyCancelCommand(root.action))
     return wasActive ? "ok" : "idle"
   }
 
@@ -131,7 +166,7 @@ Item {
     var warns = Model.WARN_SECONDS
     for (var i = 0; i < warns.length; i++) {
       if (Model.shouldWarn(previous, remaining, warns[i])) {
-        root.sendNotification(Model.notifyWarningCommand(Model.formatDuration(remaining)))
+        root.sendNotification(Model.notifyWarningCommand(Model.formatDuration(remaining), root.action))
       }
     }
 
@@ -146,7 +181,7 @@ Item {
     root.deadlineMs = 0
     root.persistState()
     root.stopBackup()
-    shutdownProc.command = Model.shutdownCommand(root.shutdownBin)
+    shutdownProc.command = Model.finishCommand(root.action, root.shutdownBin)
     shutdownProc.startDetached()
     root.firing = false
   }
@@ -157,7 +192,8 @@ Item {
     stateFile.setText(Model.serializeState({
       deadlineMs: root.active ? root.deadlineMs : 0,
       durationSec: root.active ? root.durationSeconds : 0,
-      lastDurationSec: root.lastDurationSec
+      lastDurationSec: root.lastDurationSec,
+      action: root.action
     }) + "\n")
   }
 
@@ -187,6 +223,7 @@ Item {
       return
     }
 
+    root.action = parsed.action
     root.durationSeconds = parsed.durationSec || remaining
     root.deadlineMs = parsed.deadlineMs
     root.remainingSeconds = remaining
@@ -214,7 +251,7 @@ Item {
     var action = Model.nextBackupAction(root.backupOps)
     if (action.action === "schedule") {
       root.backupOps = Model.markBackupStarted(root.backupOps, "schedule")
-      scheduleProc.command = Model.startTimerCommand(action.seconds, root.shutdownBin)
+      scheduleProc.command = Model.startTimerCommand(action.seconds, root.shutdownBin, root.action)
       scheduleProc.running = true
       return
     }
@@ -244,6 +281,15 @@ Item {
 
     function status(): string {
       return root.statusPayload()
+    }
+
+    // "shutdown" or "lights-out"
+    function setAction(action: string): string {
+      return root.setAction(action)
+    }
+
+    function getAction(): string {
+      return root.action
     }
   }
 

@@ -6,6 +6,9 @@ var DEFAULT_SECONDS = 60
 var DEFAULT_DISABLE_NOTIFICATIONS = true
 var WARN_SECONDS = [60, 10]
 var MAX_STATE_BYTES = 4096
+var ACTION_SHUTDOWN = "shutdown"
+var ACTION_LIGHTS_OUT = "lights-out"
+var DEFAULT_ACTION = ACTION_SHUTDOWN
 var LOAD_STATE_PY = [
   "import os, stat, sys",
   "path = sys.argv[1]",
@@ -224,11 +227,35 @@ function disableNotificationsFrom(value) {
   return true
 }
 
+// Anything other than the exact "lights-out" string means shutdown, so old
+// state files and settings keep the original behaviour.
+function actionFrom(value) {
+  return String(value === undefined || value === null ? "" : value).trim() === ACTION_LIGHTS_OUT
+    ? ACTION_LIGHTS_OUT
+    : ACTION_SHUTDOWN
+}
+
+function actions() {
+  return [
+    { id: ACTION_SHUTDOWN, label: "Shut down", icon: "󰐥" },
+    { id: ACTION_LIGHTS_OUT, label: "Lights Out", icon: "󰖔" }
+  ]
+}
+
+function actionTitle(action) {
+  return actionFrom(action) === ACTION_LIGHTS_OUT ? "Lights Out" : "Shutdown"
+}
+
+function actionCountdownLabel(action) {
+  return actionFrom(action) === ACTION_LIGHTS_OUT ? "Lights Out in" : "Shutting down in"
+}
+
 function emptyState(lastDurationSec) {
   return {
     deadlineMs: 0,
     durationSec: 0,
-    lastDurationSec: clampSeconds(lastDurationSec) || DEFAULT_SECONDS
+    lastDurationSec: clampSeconds(lastDurationSec) || DEFAULT_SECONDS,
+    action: DEFAULT_ACTION
   }
 }
 
@@ -247,7 +274,8 @@ function parseState(raw) {
   return {
     deadlineMs: Math.max(0, Number(parsed.deadlineMs) || 0),
     durationSec: clampSeconds(parsed.durationSec),
-    lastDurationSec: clampSeconds(parsed.lastDurationSec) || DEFAULT_SECONDS
+    lastDurationSec: clampSeconds(parsed.lastDurationSec) || DEFAULT_SECONDS,
+    action: actionFrom(parsed.action)
   }
 }
 
@@ -256,7 +284,8 @@ function serializeState(state) {
   return JSON.stringify({
     deadlineMs: Math.max(0, Number(next.deadlineMs) || 0),
     durationSec: clampSeconds(next.durationSec),
-    lastDurationSec: clampSeconds(next.lastDurationSec) || DEFAULT_SECONDS
+    lastDurationSec: clampSeconds(next.lastDurationSec) || DEFAULT_SECONDS,
+    action: actionFrom(next.action)
   })
 }
 
@@ -291,9 +320,34 @@ function resolvedShutdownBin(shutdownBin) {
   return SHUTDOWN_BIN
 }
 
-function startTimerCommand(seconds, shutdownBin) {
+var SHELL_BIN = "/usr/share/omarchy/bin/omarchy-shell"
+var LIGHTS_OUT_TARGET = "henri.lights-out"
+
+function lightsOutCommand() {
+  return [SHELL_BIN, "-q", LIGHTS_OUT_TARGET, "on"]
+}
+
+// What runs when the countdown ends. Shutdown stays the default.
+function finishCommand(action, shutdownBin) {
+  if (actionFrom(action) === ACTION_LIGHTS_OUT) return lightsOutCommand()
+  return shutdownCommand(shutdownBin)
+}
+
+function startTimerCommand(seconds, shutdownBin, action) {
   var n = clampSeconds(seconds)
   if (n <= 0) return []
+  if (actionFrom(action) === ACTION_LIGHTS_OUT) {
+    return [
+      "systemd-run",
+      "--user",
+      "--collect",
+      "--quiet",
+      "--unit=" + UNIT_NAME,
+      "--on-active=" + n + "s",
+      "--timer-property=AccuracySec=1s",
+      "--setenv=OMARCHY_PATH=/usr/share/omarchy"
+    ].concat(lightsOutCommand())
+  }
   return [
     "systemd-run",
     "--user",
@@ -428,7 +482,18 @@ function shutdownCommand(shutdownBin) {
   return [resolvedShutdownBin(shutdownBin)]
 }
 
-function notifyStartCommand(durationLabel) {
+function notifyStartCommand(durationLabel, action) {
+  if (actionFrom(action) === ACTION_LIGHTS_OUT) {
+    return [
+      "omarchy-notification-send",
+      "-g",
+      "󰔟",
+      "-u",
+      "normal",
+      "Timed Lights Out",
+      "Lights Out will turn on in " + String(durationLabel || "")
+    ]
+  }
   return [
     "omarchy-notification-send",
     "-g",
@@ -440,7 +505,18 @@ function notifyStartCommand(durationLabel) {
   ]
 }
 
-function notifyWarningCommand(remainingLabel) {
+function notifyWarningCommand(remainingLabel, action) {
+  if (actionFrom(action) === ACTION_LIGHTS_OUT) {
+    return [
+      "omarchy-notification-send",
+      "-g",
+      "󰖔",
+      "-u",
+      "normal",
+      "Timed Lights Out",
+      "Lights Out in " + String(remainingLabel || "")
+    ]
+  }
   return [
     "omarchy-notification-send",
     "-g",
@@ -452,7 +528,16 @@ function notifyWarningCommand(remainingLabel) {
   ]
 }
 
-function notifyCancelCommand() {
+function notifyCancelCommand(action) {
+  if (actionFrom(action) === ACTION_LIGHTS_OUT) {
+    return [
+      "omarchy-notification-send",
+      "-g",
+      "󰔛",
+      "Timed Lights Out",
+      "Lights Out timer cancelled"
+    ]
+  }
   return [
     "omarchy-notification-send",
     "-g",
@@ -509,6 +594,16 @@ if (typeof module !== "undefined") {
     shutdownCommand: shutdownCommand,
     notifyStartCommand: notifyStartCommand,
     notifyWarningCommand: notifyWarningCommand,
-    notifyCancelCommand: notifyCancelCommand
+    notifyCancelCommand: notifyCancelCommand,
+    ACTION_SHUTDOWN: ACTION_SHUTDOWN,
+    ACTION_LIGHTS_OUT: ACTION_LIGHTS_OUT,
+    DEFAULT_ACTION: DEFAULT_ACTION,
+    actionFrom: actionFrom,
+    actions: actions,
+    actionTitle: actionTitle,
+    actionCountdownLabel: actionCountdownLabel,
+    SHELL_BIN: SHELL_BIN,
+    lightsOutCommand: lightsOutCommand,
+    finishCommand: finishCommand
   }
 }

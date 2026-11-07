@@ -21,6 +21,9 @@ BarWidget {
   readonly property int remainingSeconds: shutdownService ? shutdownService.remainingSeconds : 0
   readonly property bool timerUrgent: shutdownService ? shutdownService.urgent === true : false
   readonly property string remainingLabel: shutdownService ? shutdownService.remainingLabel : ""
+  readonly property string countdownLabel: shutdownService && shutdownService.countdownLabel
+    ? String(shutdownService.countdownLabel)
+    : "Shutting down in"
 
   readonly property string label: {
     if (!root.timerActive) return "󰔟"
@@ -99,7 +102,7 @@ BarWidget {
     text: root.label
     active: root.timerUrgent
     tooltipText: root.timerActive
-      ? "Shutting down in " + root.remainingLabel
+      ? root.countdownLabel + " " + root.remainingLabel
       : "Timed shutdown"
     slotSize: {
       if (root.vertical || !root.timerActive) return Style.bar.iconSlot
